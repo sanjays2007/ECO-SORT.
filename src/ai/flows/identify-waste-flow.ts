@@ -71,21 +71,42 @@ Return ONLY valid JSON matching this exact structure:
   ]
 }`;
 
-  try {
-    const response = await ai.generate({
-      model: "googleai/gemini-2.0-flash",
-      prompt: [
-        { text: prompt },
-        { 
-          media: { 
-            url: `data:image/jpeg;base64,${base64Data}`,
-            contentType: "image/jpeg"
-          } 
-        }
-      ],
-    });
+  const candidateModels = [
+    "googleai/gemini-3.6-flash",
+    "googleai/gemini-3.5-flash",
+    "googleai/gemini-flash-latest",
+  ];
 
-    const text = response.text;
+  try {
+    let responseText = "";
+    let lastError: any = null;
+
+    for (const model of candidateModels) {
+      try {
+        const res = await ai.generate({
+          model,
+          prompt: [
+            { text: prompt },
+            { 
+              media: { 
+                url: `data:image/jpeg;base64,${base64Data}`,
+                contentType: "image/jpeg"
+              } 
+            }
+          ],
+        });
+        responseText = res.text;
+        break;
+      } catch (err) {
+        lastError = err;
+      }
+    }
+
+    if (!responseText) {
+      throw lastError || new Error("Failed to get response from Gemini API");
+    }
+
+    const text = responseText;
     
     // Extract JSON from response
     const jsonMatch = text.match(/\{[\s\S]*\}/);

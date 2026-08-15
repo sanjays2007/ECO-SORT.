@@ -94,30 +94,7 @@ export async function POST(req: Request) {
     }
   }
 
-  const serviceUrl = process.env.YOLO_SERVICE_URL ?? "http://127.0.0.1:8000";
-  const url = `${serviceUrl.replace(/\/$/, "")}/predict`;
-
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3_000);
-
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    }).finally(() => clearTimeout(timeout));
-
-    const data = await res.json().catch(() => null);
-
-    if (res.ok && data) {
-      return NextResponse.json(data);
-    }
-  } catch {
-    // YOLO service unreachable or timed out
-  }
-
-  // Fallback to Gemini Vision Object Detection using the configured Gemini API key
+  // Gemini API Direct Object Detection & Classification
   try {
     const geminiResult = await identifyWasteFromImage(body.image);
     const detections = (geminiResult.detectedObjects ?? []).map((det) => ({

@@ -267,7 +267,7 @@ export function WasteScanner() {
       if (top?.label) {
         const wasteType = String(top.label);
         const wasteTypeConfidence = Number(top.confidence ?? 0);
-        const binSuggestion = guessBinFromLabel(wasteType);
+        const binSuggestion = (top.binSuggestion as WasteBin) || guessBinFromLabel(wasteType);
 
         const newResult: ScanResult = {
           wasteType,
@@ -304,7 +304,7 @@ export function WasteScanner() {
         toast({
           variant: "destructive",
           title: "Scan Failed",
-          description: error instanceof Error ? error.message : "Could not classify the item. Ensure the YOLO service is running.",
+          description: error instanceof Error ? error.message : "Could not classify the item with Gemini API.",
         });
       }
     } finally {
@@ -322,93 +322,14 @@ export function WasteScanner() {
     setShowMistakeWarning(false);
 
     try {
-      scanStreamIdRef.current = crypto.randomUUID();
-      const FRAMES = 5;
-      const INTERVAL_MS = 250;
-      let lastFrame: string | null = null;
-
-      for (let i = 0; i < FRAMES; i++) {
-        const currentFrame = await captureFrame();
-        if (!currentFrame) {
-          await new Promise((r) => setTimeout(r, INTERVAL_MS));
-          continue;
-        }
-        lastFrame = currentFrame;
-
-        // Send frame for voting, but don't process result yet
-        fetch("/api/yolo/predict", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            image: currentFrame,
-            conf: detectionConfidence,
-            source: "camera",
-            skipSafetyCheck: true,
-            vote: true,
-            streamId: scanStreamIdRef.current,
-            voteWindow: FRAMES,
-            voteMin: 3,
-          }),
-        });
-
-        await new Promise((r) => setTimeout(r, INTERVAL_MS));
-      }
-
+      const lastFrame = await captureFrame();
       if (!lastFrame) {
-        throw new Error("Could not capture frames from camera");
+        throw new Error("Could not capture frame from camera");
       }
       setPreviewUrl(lastFrame);
       toggleCamera(false);
 
-      const yoloRes = await fetch("/api/yolo/predict", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          image: lastFrame,
-          conf: detectionConfidence,
-          source: "camera",
-          skipSafetyCheck: false,
-          vote: true,
-          streamId: scanStreamIdRef.current,
-          voteWindow: FRAMES,
-          voteMin: 3,
-        }),
-      });
-
-      if (!yoloRes.ok) {
-        const errorData = await yoloRes.json().catch(() => null);
-        throw new Error(
-          errorData?.details
-            ? String(errorData.details)
-            : errorData?.error
-              ? String(errorData.error)
-              : "Final prediction failed"
-        );
-      }
-      const yoloData = await yoloRes.json();
-      const stable = (yoloData?.stable ?? null) as YoloStableVote | null;
-      const detections = yoloData?.detections || [];
-      const label = stable?.label && stable.label !== "Thinking..." ? stable.label : "unknown";
-      const votes = Number(stable?.votes ?? 0);
-      const window = Number(stable?.window ?? FRAMES);
-      const voteConfidence = window > 0 ? Math.min(1, Math.max(0, votes / window)) : 0;
-      
-      const newResult: ScanResult = {
-        wasteType: label,
-        wasteTypeConfidence: voteConfidence,
-        binSuggestion: guessBinFromLabel(label),
-        binConfidence: voteConfidence,
-        imageUrl: lastFrame,
-        detections: detections,
-      };
-
-      setResult(newResult);
-      setRecentScans((prev) => [newResult, ...prev.slice(0, 4)]);
-      addScan({ source: "camera", ...newResult });
-      if (enableSoundEffects) playSuccessSound();
-      if (insights?.mostCommonMistake && insights.mostCommonMistake.item.toLowerCase() === newResult.wasteType.toLowerCase()) {
-        setShowMistakeWarning(true);
-      }
+      await handleScan(lastFrame, { source: "camera" });
     } catch (e) {
       toast({
         variant: "destructive",
@@ -419,7 +340,7 @@ export function WasteScanner() {
       setIsLoading(false);
       setIsCameraScanning(false);
     }
-  }, [captureFrame, toast, isCameraScanning, detectionConfidence, addScan, enableSoundEffects, insights, toggleCamera]);
+  }, [captureFrame, toggleCamera, handleScan, isCameraScanning, toast]);
 
   useEffect(() => {
     let intervalId: NodeJS.Timeout | undefined;
@@ -439,7 +360,7 @@ export function WasteScanner() {
     };
 
     if (isCameraOn && yoloStatus === 'online' && enableLiveDetection) {
-      intervalId = setInterval(liveScanLoop, 500);
+      intervalId = setInterval(liveScanLoop, 2500);
     }
 
     return () => {
@@ -510,13 +431,13 @@ export function WasteScanner() {
           <CardTitle className="flex items-center gap-4">
             <span>Scanner Control</span>
             {yoloStatus === "checking" && (
-              <Badge variant="outline"><Loader2 className="mr-2 h-4 w-4 animate-spin" />Checking AI Service...</Badge>
+              <Badge variant="outline"><Loader2 className="mr-2 h-4 w-4 animate-spin" />Checking Gemini AI...</Badge>
             )}
             {yoloStatus === "online" && (
-              <Badge variant="secondary" className="border-green-500/50"><Server className="mr-2 h-4 w-4 text-green-500" />AI Service Online</Badge>
+              <Badge variant="secondary" className="border-green-500/50"><Sparkles className="mr-2 h-4 w-4 text-green-500" />Gemini Vision API Active</Badge>
             )}
             {yoloStatus === "offline" && (
-              <Badge variant="destructive"><ServerCrash className="mr-2 h-4 w-4" />AI Service Offline</Badge>
+              <Badge variant="destructive"><ServerCrash className="mr-2 h-4 w-4" />Gemini API Offline</Badge>
             )}
           </CardTitle>
            {yoloStatus === "offline" && (
@@ -524,47 +445,7 @@ export function WasteScanner() {
                 <AlertTriangle className="h-4 w-4" />
                 <AlertTitle>Action Required</AlertTitle>
                 <AlertDescription>
-                  The local AI detection service is not running. This app requires two services running at the same time. You will need **two separate terminal windows**.
-                  <br/><br/>
-                  In **Terminal 1**, run the web app: `npm run dev`
-                  <br/>
-                  In **Terminal 2**, follow the steps below:
-                  <Accordion type="multiple" className="w-full mt-2" defaultValue={['item-1', 'item-2']}>
-                    <AccordionItem value="item-1">
-                      <AccordionTrigger className="text-sm hover:no-underline">First-Time Setup (Do this only once)</AccordionTrigger>
-                      <AccordionContent>
-                        <div className="p-3 bg-background/50 rounded-md text-xs font-mono space-y-2">
-                            <p className="text-muted-foreground"># 1. Go to the service directory</p>
-                            <p>cd yolo-service</p>
-                            
-                            <p className="mt-2 text-muted-foreground"># 2. Create a virtual environment</p>
-                            <p>python3 -m venv .venv</p>
-
-                            <p className="mt-2 text-muted-foreground"># 3. Activate it (macOS/Linux)</p>
-                            <p>source .venv/bin/activate</p>
-                            
-                            <p className="mt-2 text-muted-foreground"># 4. Install dependencies</p>
-                            <p>pip install -r requirements.txt</p>
-                        </div>
-                        <p className="mt-2 text-xs text-muted-foreground">After setup, follow the "Start the Service" steps.</p>
-                      </AccordionContent>
-                    </AccordionItem>
-                    <AccordionItem value="item-2" className="border-b-0">
-                      <AccordionTrigger className="text-sm hover:no-underline">Start the Service (Every Time)</AccordionTrigger>
-                      <AccordionContent>
-                        <div className="p-3 bg-background/50 rounded-md text-xs font-mono space-y-2">
-                            <p className="text-muted-foreground"># 1. Go to the service directory (if not already there)</p>
-                            <p>cd yolo-service</p>
-                            
-                            <p className="mt-2 text-muted-foreground"># 2. Activate the virtual environment (macOS/Linux)</p>
-                            <p>source .venv/bin/activate</p>
-                            
-                            <p className="mt-2 text-muted-foreground"># 3. Run the service</p>
-                            <p>python3 -m uvicorn app:app --reload --port 8000</p>
-                        </div>
-                      </AccordionContent>
-                    </AccordionItem>
-                  </Accordion>
+                  Gemini API key is missing or invalid. Please check <code className="font-mono">.env.local</code> and ensure <code className="font-mono">GEMINI_API_KEY</code> is configured.
                 </AlertDescription>
               </Alert>
            )}

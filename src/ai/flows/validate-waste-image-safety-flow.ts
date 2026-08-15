@@ -39,20 +39,41 @@ Return ONLY valid JSON in this exact format:
 
 Mark safeForWasteClassification as true only when the image shows the waste object alone with no visible human content.`;
 
-  const response = await ai.generate({
-    model: "googleai/gemini-2.0-flash",
-    prompt: [
-      { text: prompt },
-      {
-        media: {
-          url: `data:image/jpeg;base64,${base64Data}`,
-          contentType: "image/jpeg",
-        },
-      },
-    ],
-  });
+  const candidateModels = [
+    "googleai/gemini-3.6-flash",
+    "googleai/gemini-3.5-flash",
+    "googleai/gemini-flash-latest",
+  ];
 
-  const text = response.text;
+  let responseText = "";
+  let lastError: any = null;
+
+  for (const model of candidateModels) {
+    try {
+      const res = await ai.generate({
+        model,
+        prompt: [
+          { text: prompt },
+          {
+            media: {
+              url: `data:image/jpeg;base64,${base64Data}`,
+              contentType: "image/jpeg",
+            },
+          },
+        ],
+      });
+      responseText = res.text;
+      break;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  if (!responseText) {
+    throw new Error(`Gemini safety check failed: ${lastError?.message || String(lastError)}`);
+  }
+
+  const text = responseText;
   const jsonMatch = text.match(/\{[\s\S]*\}/);
 
   if (!jsonMatch) {
